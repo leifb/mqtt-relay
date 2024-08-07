@@ -1,0 +1,23 @@
+# This example config contains all configuration options available.
+# Copy / rename this file to `config.yaml` to use.
+
+# The directory at which you MQTT mappings are located
+mappings_dir: ./mappings
+# configuratioin for the MQTT client
+mqtt:
+  # The id of the MQTT client.
+  id: mqtt-relay
+  # The host at which the MQTT broker can be reached.
+  host: localhost
+  # The port of the MQTT broker.
+  port: 1883
+  # The intervall in seconds at which keep alive packets are sent.
+  keep_alive_intervall_seconds: 60
+  # The capacity of the bounded async channel.
+  capacity: 10
+  # The user used for authentication.
+  # Only used when password is also set.
+  user: null
+  # The password used for authentication.
+  # Only used when user is also set.
+  password: null
