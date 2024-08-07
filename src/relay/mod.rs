@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::{Arc, Mutex}, time::Duration};
+use std::{path::PathBuf, sync::{Arc, Mutex}, thread, time::Duration};
 
 use fs_watch::{reload, watch_for_fs_changes};
 use log::{debug, info, warn};
@@ -58,6 +58,8 @@ impl Relay {
                 },
                 Err(error) => {
                     warn!("MQTT connection error: {:?}", error);
+                    // Not a great solution, but this prevents spamming the logs
+                    thread::sleep(Duration::from_secs(5));
                 },
             }
         }
