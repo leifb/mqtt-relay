@@ -1,21 +1,22 @@
-use std::{path::PathBuf, sync::{Arc, Mutex}, thread, time::Duration};
+use std::{path::PathBuf, sync::Arc, thread::{self}, time::Duration};
 
-use fs_watch::{reload, watch_for_fs_changes};
+use fs_watch::  FileSystemWatcher;
 use log::{debug, info, warn};
-use rumqttc::{Client, Connection, Event, MqttOptions, Packet, Publish, QoS};
+use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet, Publish, QoS};
+use tokio::sync::Mutex;
 
 use crate::{config::{Config, Mqtt}, mappings::MappingConfig};
 
 mod fs_watch;
 
 pub struct Relay {
-    client: Client,
-    connection: Connection,
+    client: AsyncClient,
+    connection: EventLoop,
     mappings: MappingConfig,
 }
 
 impl Relay {
-    pub fn run(config: Config) {
+    pub async fn run(config: Config) {
         // Read mappings
         let mappings = MappingConfig::create(PathBuf::from(config.mappings_dir));
 
@@ -28,33 +29,35 @@ impl Relay {
             connection,
         };
 
-        relay.start()
+        relay.start().await
     }
 
-    fn start(mut self) {
+    async fn start(mut self) {
         let mutex = Arc::new(Mutex::new((self.client, self.mappings)));
 
-        // Start listening for fs changes
-        let _watcher = watch_for_fs_changes(mutex.clone())
-            .expect("Failed to start watching for fs changes");
+        // Create the watcher what reloads mapping configs when they change
+        let watcher = FileSystemWatcher::new(mutex.clone());
 
         // Initial "reload" to start up
-        reload(mutex.clone());        
+        watcher.reload().await
+            .expect("Failed loading mapping configs");
+
+        tokio::spawn(async move {
+            watcher.start().await;
+        });          
 
         // Log that we are ready
         info!("Startup complete");
 
         // Main Loop
-        for notification in self.connection.iter() {
+        loop {
+            let notification = self.connection.poll().await;
+        
             match notification {
                 Ok(event) => {
-                    match mutex.clone().lock() {
-                        Ok(mutex) => {
-                            on_event(event, &mutex.1, &mutex.0);
-                        },
-                        Err(_) => todo!(),
-                    }
-                    
+                    let mutex = mutex.clone();
+                    let mutex = mutex.lock().await;
+                    on_event(event, &mutex.1, &mutex.0).await;
                 },
                 Err(error) => {
                     warn!("MQTT connection error: {:?}", error);
@@ -67,7 +70,7 @@ impl Relay {
 }
 
 
-fn create_mqtt_client(config: Mqtt) -> (Client, Connection) {
+fn create_mqtt_client(config: Mqtt) -> (AsyncClient, EventLoop) {
     let mut mqttoptions = MqttOptions::new(config.id, config.host, config.port);
     mqttoptions.set_keep_alive(Duration::from_secs(config.keep_alive_intervall_seconds));
 
@@ -75,16 +78,17 @@ fn create_mqtt_client(config: Mqtt) -> (Client, Connection) {
         mqttoptions.set_credentials(config.user.unwrap(), config.password.unwrap());
     }
 
-    Client::new(mqttoptions, config.capacity)
+    AsyncClient::new(mqttoptions, config.capacity)
 }
 
 
-fn on_event(event: Event, mappings: &MappingConfig, client: &Client) {
+async fn on_event(event: Event, mappings: &MappingConfig, client: &AsyncClient) {
     match event {
         Event::Incoming(incoming) => {
             match incoming {
                 Packet::Publish(message) => {
                     let _ = on_message(message, mappings, client)
+                        .await
                         .inspect_err(|err| warn!("Failed to handle message: {}", err));
                 },
                 _ => {
@@ -98,7 +102,7 @@ fn on_event(event: Event, mappings: &MappingConfig, client: &Client) {
     }
 }
 
-fn on_message(message: Publish, mappings: &MappingConfig, client: &Client) -> Result<(), String> {
+async fn on_message(message: Publish, mappings: &MappingConfig, client: &AsyncClient) -> Result<(), String> {
     debug!("Received message on topic {}", message.topic);
     let mapping = mappings.get_mapping(&message.topic)
         .ok_or(format!("Could not find mapping for topic '{}'", message.topic))?;
@@ -111,7 +115,7 @@ fn on_message(message: Publish, mappings: &MappingConfig, client: &Client) -> Re
             QoS::AtMostOnce,
             false,
             message.message.clone()
-        ).inspect_err(|error| {
+        ).await.inspect_err(|error| {
             warn!("Failed to publish to {}: {}", message.topic, error);
         });
     }

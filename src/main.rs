@@ -5,10 +5,11 @@ mod mappings;
 mod relay;
 mod config;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     colog::init();
     log_meta();
-    Relay::run(config::auto_load());
+    Relay::run(config::auto_load()).await;
 }
 
 fn log_meta() {
